@@ -1,12 +1,15 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"time"
+
+	board "github.com/grupawp/warships-lightgui"
 )
 
 const (
@@ -34,16 +37,24 @@ type StatusResponse struct {
 	Timer          int      `json:"timer"`
 }
 
-func InitGame() (string, Game, []string, *StatusResponse, error) {
+func InitGame(wpbot bool) (string, Game, []string, error) {
 	url, err := url.JoinPath(httpApiUrlAddress, "/game")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	resp, err := http.NewRequest(http.MethodPost, url, nil)
+	game := Game{WPBot: wpbot}
+
+	gameJSON, err := json.Marshal(game)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	resp, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(gameJSON))
+	if err != nil {
+		log.Fatal(err)
+	}
+	resp.Header.Set("Content-Type", "application/json")
 	client := &http.Client{
 		Timeout: httpClientTimeout,
 	}
@@ -54,6 +65,8 @@ func InitGame() (string, Game, []string, *StatusResponse, error) {
 	defer response.Body.Close()
 
 	token := response.Header.Get("X-Auth-Token")
+	time.Sleep(2 * time.Second)
+
 	resp, err = http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -68,28 +81,20 @@ func InitGame() (string, Game, []string, *StatusResponse, error) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	game := Game{}
+
 	err = json.Unmarshal(body, &game)
 	if err != nil {
 		log.Fatal(err)
 	}
-	game.WPBot = true
-
 	layout, err := Board(token)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	game.Coords = layout
+	time.Sleep(2 * time.Second)
+	return token, game, layout, err
 
-	status, err := Status(token)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	game.Desc = status.Desc
-
-	return token, game, layout, status, err
 }
 func Board(token string) ([]string, error) {
 	type Board struct {
@@ -163,6 +168,73 @@ func Status(token string) (*StatusResponse, error) {
 	return &statusResponse, err
 }
 
-// func Fire(coord string) (string, error) {
+func Fire(pos int, coord, token string, board *board.Board) (string, error) {
+	type Coord struct {
+		Coord string `json:"coord"`
+	}
+	type Result struct {
+		Result string `json:"result"`
+	}
+	url, err := url.JoinPath(httpApiUrlAddress, "/game/fire")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-// }
+	fire := Coord{Coord: coord}
+
+	fireJSON, err := json.Marshal(fire)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(fireJSON))
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("X-Auth-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Timeout: httpClientTimeout,
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var result Result
+
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return result.Result, err
+}
+func Abandon(token string) error {
+	url, err := url.JoinPath(httpApiUrlAddress, "/game/abandon")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req.Header.Set("X-Auth-Token", token)
+	client := &http.Client{
+		Timeout: httpClientTimeout,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return err
+}

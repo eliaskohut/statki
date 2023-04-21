@@ -4,33 +4,41 @@ import (
 	"fmt"
 	"log"
 	"main/client"
+	"time"
 
-	"github.com/fatih/color"
 	board "github.com/grupawp/warships-lightgui"
 )
 
 func Start() {
-	token, game, layout, status, err := client.InitGame()
+	token, game, layout, err := client.InitGame(true)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	board := board.New(
-		board.ConfigParams().
-			HitChar('#').
-			HitColor(color.FgRed).
-			BorderColor(color.BgRed).
-			RulerTextColor(color.BgYellow).
-			NewConfig())
-
-	for _, i := range layout {
-		board.Set(0, i, 4)
+	status, err := client.Status(token)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for {
+		if status.GameStatus != "waiting" {
+			break
+		}
+		fmt.Println("Waiting for an opponent...")
+		time.Sleep(1 * time.Second)
 	}
 
-	board.Display()
+	board := board.New(board.NewConfig())
 
-	fmt.Println(token)
+	board.Import(layout)
+	board.Display()
+	fmt.Printf("Me: %s \n", status.Nick)
+	fmt.Printf("Player2: %s \n", status.Opponent)
+	fmt.Printf("Opponent description: %s \n", status.OppDesc)
+
+	// if(status.ShouldFire==true){
+
+	// }
+
 	fmt.Println(game)
-	fmt.Println(layout)
 	fmt.Println(status)
+	fmt.Println(client.Fire(0, layout[0], token, board))
 }
