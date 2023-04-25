@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-
-	board "github.com/grupawp/warships-lightgui"
 )
 
 const (
@@ -136,7 +134,7 @@ func Board(token string) ([]string, error) {
 }
 
 func Status(token string) (*StatusResponse, error) {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game")
+	url, err := url.JoinPath(httpApiUrlAddress, "/game/desc")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -168,54 +166,6 @@ func Status(token string) (*StatusResponse, error) {
 	return &statusResponse, err
 }
 
-func Fire(pos int, coord, token string, board *board.Board) (string, error) {
-	type Coord struct {
-		Coord string `json:"coord"`
-	}
-	type Result struct {
-		Result string `json:"result"`
-	}
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/fire")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fire := Coord{Coord: coord}
-
-	fireJSON, err := json.Marshal(fire)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(fireJSON))
-	if err != nil {
-		log.Fatal(err)
-	}
-	req.Header.Set("X-Auth-Token", token)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-	response, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var result Result
-
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return result.Result, err
-}
 func Abandon(token string) error {
 	url, err := url.JoinPath(httpApiUrlAddress, "/game/abandon")
 	if err != nil {
