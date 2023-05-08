@@ -71,9 +71,6 @@ func Start() {
 
 	oppBoard := gui.NewBoard(70, 5, nil)
 	oppStates := [10][10]gui.State{}
-	for i := range states {
-		states[i] = [10]gui.State{}
-	}
 	oppBoard.SetStates(oppStates)
 	oppName := gui.NewText(70, 30, status.Opponent, nil)
 	oppDesc := gui.NewText(70, 32, formatString(gameDesc.OppDesc, 5), nil)
@@ -82,15 +79,14 @@ func Start() {
 	ui.Draw(oppDesc)
 
 	shots := []string{}
-	oppShots := status.OppShots
+
+	sunkCount := 0
+	oppSunkCount := 0
+
 	go func() {
-		sunkCount := 0
-		oppSunkCount := 0
-		states := [10][10]gui.State{}
-		for _, i := range mapped {
-			states[i[0]][i[1]-1] = gui.Ship
-		}
 		for {
+			time.Sleep(time.Millisecond * 300)
+			oppShots := status.OppShots
 			if status.ShouldFire {
 				txtShouldFire.SetFgColor(gui.Red)
 				txtShouldFire.SetText("You should fire!")
@@ -107,11 +103,10 @@ func Start() {
 				}
 				if shotRes == "hit" {
 					oppStates[x][y-1] = gui.Hit
-					status.ShouldFire = true
-					time.Sleep(time.Millisecond * 200)
+					time.Sleep(time.Millisecond * 30)
 				} else if shotRes == "miss" {
 					oppStates[x][y-1] = gui.Miss
-					time.Sleep(time.Millisecond * 400)
+					time.Sleep(time.Millisecond * 100)
 					status.ShouldFire = false
 				} else if shotRes == "" {
 					time.Sleep(time.Second * 1)
@@ -119,78 +114,58 @@ func Start() {
 				} else if shotRes == "sunk" {
 					oppStates[x][y-1] = gui.Hit
 					sunkCount++
-					status.ShouldFire = true
-					time.Sleep(time.Millisecond * 200)
+					time.Sleep(time.Millisecond * 30)
 				}
 				oppBoard.SetStates(oppStates)
 				shots = append(shots, char)
 				txt.SetText(fmt.Sprintf("Coordinate: %s, %s", char, shotRes))
-				ui.Log("Coordinate: %s, %s", char, shotRes)
+				ui.Log("%s; Coordinate: %s, %s", status.Nick, char, shotRes)
 			} else if !status.ShouldFire {
 				txtShouldFire.SetText("It's not your turn")
 				txtShouldFire.SetFgColor(gui.Blue)
 				ui.Draw(txtShouldFire)
 				ui.Log("It's not your turn")
-				if len(oppShots) == 0 {
+				if len(oppShots) != 0 {
+					char := oppShots[len(oppShots)-1]
+					x, y, err := stringCoordToInt(char)
+					if err != nil {
+						log.Fatal(err)
+					}
+					if contains(game.Coords, char) {
+						states[x][y-1] = gui.Hit
+						board.SetStates(states)
+						txt.SetText(fmt.Sprintf("Your opponent hit on %s", char))
+						ui.Log("%s; Coordinate: %s, %s", status.Opponent, char, "hit")
+						time.Sleep(time.Millisecond * 500)
+					} else {
+						states[x][y-1] = gui.Miss
+						txt.SetText(fmt.Sprintf("Your opponent missed on %s", char))
+						ui.Log("%s; Coordinate: %s, %s", status.Opponent, char, "miss")
+						board.SetStates(states)
+						status.ShouldFire = true
+						time.Sleep(time.Millisecond * 500)
+					}
+				} else {
 					txtShouldFire.SetText("Waiting for opponent to shoot...")
-					time.Sleep(time.Millisecond * 400)
-				}
-				char := oppShots[len(oppShots)-1]
-				shotRes, err := client.Fire(token, char)
-				if err != nil {
-					log.Fatal(err)
-				}
-				x, y, err := stringCoordToInt(char)
-				if err != nil {
-					log.Fatal(err)
-				}
-				if shotRes == "hit" {
-					states[x][y-1] = gui.Hit
-					txt.SetText(fmt.Sprintf("Your opponent hit on %s", char))
-					ui.Log("Your opponent hit on %s", char)
-					status.ShouldFire = false
 					time.Sleep(time.Second * 1)
-				} else if shotRes == "miss" {
-					states[x][y-1] = gui.Miss
-					status.ShouldFire = true
-					txt.SetText(fmt.Sprintln("Your opponent missed, now your turn"))
-					ui.Log("Your opponent missed, now your turn")
-					time.Sleep(time.Second * 1)
-				} else if shotRes == "sunk" {
-					states[x][y-1] = gui.Hit
-					txt.SetText(fmt.Sprintln("Your opponent sunk your ship"))
-					ui.Log("Your opponent sunk your ship")
-					oppSunkCount++
-					status.ShouldFire = false
-					time.Sleep(time.Second * 1)
-				} else if shotRes == "" {
-					time.Sleep(time.Second * 1)
-					continue
 				}
 
-				if sunkCount == 10 {
-					txt.SetText("You won!")
-					txt.SetBgColor(gui.Green)
-					break
-				}
-				if oppSunkCount == 10 {
-					txt.SetText("You lost!")
-					txt.SetBgColor(gui.Red)
-					break
-				}
-
-				board.SetStates(states)
-
-				ui.Log("Coordinate: %s, %s", char, shotRes)
 			}
-			status, err = client.Status(token)
-			if err != nil {
-				log.Fatal(err)
+			if sunkCount == 10 {
+				txt.SetText("You won!")
+				txt.SetBgColor(gui.Green)
+				break
+			} else if oppSunkCount == 10 {
+				txt.SetText("You lost!")
+				txt.SetBgColor(gui.Red)
+				break
 			}
-			oppShots = status.OppShots
+		}
+		status, err = client.Status(token)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}()
-
 	ui.Start(nil)
 
 	fmt.Println(game)
@@ -242,4 +217,12 @@ func formatString(s string, n int) string {
 		buf.WriteByte(s[i])
 	}
 	return buf.String()
+}
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
 }
