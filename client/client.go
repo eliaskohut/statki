@@ -179,7 +179,7 @@ func Status(token string) (*StatusResponse, error) {
 	return &statusResponse, err
 }
 func Fire(token string, coord string) (string, error) {
-	time.Sleep(time.Millisecond * 400)
+	time.Sleep(time.Millisecond * 200)
 	shot := Shot{Coord: coord}
 	shotJson, err := json.Marshal(shot)
 	if err != nil {
