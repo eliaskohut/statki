@@ -13,43 +13,73 @@ import (
 	gui "github.com/grupawp/warships-gui/v2"
 )
 
+const (
+	waitingTime    = time.Second / 3
+	squarePickTime = time.Millisecond * 30
+	missDelayTime  = time.Millisecond * 400
+	hitRes         = "hit"
+	missRes        = "miss"
+	sunkRes        = "sunk"
+	blankRes       = ""
+)
+
+// Start initializes the game, gets token, game status, and layout
+// then maps the layout from a slice of strings to a format which can be read by gui.
+// It creates ui, player's board, and opponent's board. It then listens to player's input,
+// logs it, and checks the status to see if the player should fire.
 func Start() {
-	//Initializing the game, getting token, game status,
-	//and layout
 	token, game, layout, err := client.InitGame(true)
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println(token)
 	status, err := client.Status(token)
 	if err != nil {
 		log.Fatal(err)
 	}
 	//If status is "waiting", wait till the game starts
-	for {
-		if status.GameStatus != "waiting" {
-			break
+	for status.GameStatus == "waiting" {
+		fmt.Println("Waiting for an opponent.")
+		time.Sleep(waitingTime)
+		status, err = client.Status(token)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Waiting for an opponent..")
+		time.Sleep(waitingTime)
+		status, err = client.Status(token)
+		if err != nil {
+			log.Fatal(err)
 		}
 		fmt.Println("Waiting for an opponent...")
-		time.Sleep(1 * time.Second)
+		time.Sleep(waitingTime)
+		status, err = client.Status(token)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	//Mapping layout from a slice of strings to
-	//a format, which can be read by gui
+	gameDesc, err := client.Description(token)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var mapped [][]int
 	mapped, err = mapping(layout)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// fmt.Println(mapped)
 
 	//Craeting ui
 	ui := gui.NewGUI(true)
 	txt := gui.NewText(1, 1, "Press on any coordinate to log it.", nil)
 	txtShouldFire := gui.NewText(1, 3, "", nil)
+	txtTimer := gui.NewText(1, 4, strconv.Itoa(status.Timer), nil)
 	ui.Draw(txt)
+	ui.Draw(txtShouldFire)
+	ui.Draw(txtTimer)
 	ui.Draw(gui.NewText(1, 2, "Press Ctrl+C to exit", nil))
 
-	//Creating player's board
 	board := gui.NewBoard(1, 5, nil)
 	states := [10][10]gui.State{}
 	for _, i := range mapped {
@@ -57,57 +87,156 @@ func Start() {
 	}
 	board.SetStates(states)
 	playerName := gui.NewText(1, 30, status.Nick, nil)
-	playerDesc := gui.NewText(1, 32, formatString(status.Desc, 5), nil)
 	ui.Draw(board)
 	ui.Draw(playerName)
-	ui.Draw(playerDesc)
+	formatString(gameDesc.Desc, 40, 1, 32, *ui)
 
-	//Creating opponent's board
-	oppboard := gui.NewBoard(70, 5, nil)
-	oppstates := [10][10]gui.State{}
-	for i := range states {
-		states[i] = [10]gui.State{}
-	}
-	oppboard.SetStates(oppstates)
+	oppBoard := gui.NewBoard(70, 5, nil)
+	oppStates := [10][10]gui.State{}
+	oppBoard.SetStates(oppStates)
 	oppName := gui.NewText(70, 30, status.Opponent, nil)
-	oppDesc := gui.NewText(70, 32, formatString(status.OppDesc, 5), nil)
-	ui.Draw(oppboard)
+	ui.Draw(oppBoard)
 	ui.Draw(oppName)
-	ui.Draw(oppDesc)
+	formatString(gameDesc.OppDesc, 40, 70, 32, *ui)
+
+	shots := []string{}
+
+	sunkCount := 0
+	oppSunkCount := 0
 
 	go func() {
 		for {
 			if status.ShouldFire {
 				txtShouldFire.SetFgColor(gui.Red)
 				txtShouldFire.SetText("You should fire!")
-				ui.Draw(txtShouldFire)
 				ui.Log("You should fire!")
-			} else {
+				char := oppBoard.Listen(context.TODO())
+				time.Sleep(squarePickTime)
+				x, y, err := stringCoordToInt(char)
+				if err != nil {
+					log.Fatal(err)
+				}
+				for oppStates[x][y-1] == gui.Miss || oppStates[x][y-1] == gui.Hit {
+					char = oppBoard.Listen(context.TODO())
+					time.Sleep(squarePickTime)
+					x, y, err = stringCoordToInt(char)
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
+				shotRes, err := client.Fire(token, char)
+				if err != nil {
+					log.Fatal(err)
+				}
+				if shotRes == hitRes {
+					oppStates[x][y-1] = gui.Hit
+				} else if shotRes == missRes {
+					oppStates[x][y-1] = gui.Miss
+					status.ShouldFire = false
+					time.Sleep(missDelayTime)
+				} else if shotRes == blankRes {
+					time.Sleep(time.Second * 1)
+					continue
+				} else if shotRes == sunkRes {
+					oppStates[x][y-1] = gui.Hit
+					sunkCount++
+				}
+				oppBoard.SetStates(oppStates)
+				shots = append(shots, char)
+				txt.SetText(fmt.Sprintf("Coordinate: %s, %s", char, shotRes))
+				ui.Log("%s; Coordinate: %s, %s", status.Nick, char, shotRes)
+			} else if !status.ShouldFire {
+				oppShotsLen := len(status.OppShots)
+				for {
+					status, err = client.Status(token)
+					if err != nil {
+						log.Fatal(err)
+					}
+					if len(status.OppShots) > oppShotsLen {
+						break
+					}
+					txtShouldFire.SetText("Waiting for opponent to shoot.")
+					time.Sleep(waitingTime)
+					status, err = client.Status(token)
+					if err != nil {
+						log.Fatal(err)
+					}
+					txtShouldFire.SetText("Waiting for opponent to shoot..")
+					time.Sleep(waitingTime)
+					status, err = client.Status(token)
+					if err != nil {
+						log.Fatal(err)
+					}
+					txtShouldFire.SetText("Waiting for opponent to shoot...")
+					time.Sleep(waitingTime)
+				}
+
 				txtShouldFire.SetText("It's not your turn")
 				txtShouldFire.SetFgColor(gui.Blue)
-				ui.Draw(txtShouldFire)
-				ui.Log("You should fire!")
+				oppShots := status.OppShots
+				char := oppShots[len(oppShots)-1]
+				x, y, err := stringCoordToInt(char)
+				if err != nil {
+					log.Fatal(err)
+				}
+				if contains(game.Coords, char) {
+					states[x][y-1] = gui.Hit
+					time.Sleep(time.Millisecond * 50)
+					board.SetStates(states)
+					txt.SetText(fmt.Sprintf("Your opponent hit on %s", char))
+					ui.Log("%s; Coordinate: %s, %s", status.Opponent, char, "hit")
+				} else {
+					states[x][y-1] = gui.Miss
+					txt.SetText(fmt.Sprintf("Your opponent missed on %s", char))
+					ui.Log("%s; Coordinate: %s, %s", status.Opponent, char, "miss")
+					board.SetStates(states)
+					status.ShouldFire = true
+				}
+
 			}
-			char := board.Listen(context.TODO())
-			txt.SetText(fmt.Sprintf("Coordinate: %s", char))
-			ui.Log("Coordinate: %s", char) // logs are displayed after the game exits
+			if sunkCount == 10 {
+				txt.SetText("You won!")
+				txt.SetBgColor(gui.Green)
+				break
+			} else if oppSunkCount == 10 {
+				txt.SetText("You lost!")
+				txt.SetBgColor(gui.Red)
+				break
+			}
+		}
+		status, err = client.Status(token)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}()
-
+	go func() {
+		for status.Timer != 0 {
+			status, err = client.Status(token)
+			if err != nil {
+				log.Fatal(err)
+			}
+			txtTimer.SetText(strconv.Itoa(status.Timer))
+			time.Sleep(waitingTime * 3)
+		}
+		if status.ShouldFire {
+			txt.SetText("You won!")
+			txt.SetBgColor(gui.Green)
+		} else if !status.ShouldFire {
+			txt.SetText("You lost!")
+			txt.SetBgColor(gui.Red)
+		}
+	}()
 	ui.Start(nil)
 
-	// fmt.Printf("\n\nMe: %s \n", status.Nick)
-	// fmt.Printf("%s \n\n", status.Desc)
-	// fmt.Printf("Player2: %s \n", status.Opponent)
-	// fmt.Printf("Opponent description: %s \n\n", status.OppDesc)
-	// fmt.Println(token)
-
+	fmt.Println(gameDesc)
 	fmt.Println(game)
-	// fmt.Println(status)
+	fmt.Println(shots)
+	fmt.Println(status.OppShots)
 }
 
 var ErrInvalidCoord = errors.New("invalid coordinate")
 
+// stringCoordToInt converts a string coordinate to int coordinates
 func stringCoordToInt(coord string) (int, int, error) {
 	if len(coord) < 2 || len(coord) > 3 {
 		return 0, 0, ErrInvalidCoord
@@ -124,25 +253,46 @@ func stringCoordToInt(coord string) (int, int, error) {
 	return x, y, nil
 
 }
+
+// mapping maps layout from a slice of strings to a format which can be read by gui
 func mapping(layout []string) ([][]int, error) {
-	var resslice [][]int
+	var resSlice [][]int
 	for _, i := range layout {
 		x, y, err := stringCoordToInt(i)
 		if err != nil {
 			log.Fatal(err)
 		}
-		resslice = append(resslice, []int{x, y})
+		resSlice = append(resSlice, []int{x, y})
 	}
-	return resslice, nil
+	return resSlice, nil
 }
-func formatString(s string, n int) string {
-	runes := []rune(s)
-	var result string
-	for i, r := range runes {
-		if i > 0 && i%n == 0 {
-			result += "\n"
-		}
-		result += string(r)
+func formatString(s string, n, x, y int, ui gui.GUI) {
+	numSubstrings := len(s) / n
+	if len(s)%n != 0 {
+		numSubstrings++
 	}
-	return result
+
+	// Create a slice to store the substrings
+	substrings := make([]string, numSubstrings)
+
+	// Loop through the string, creating substrings of length n
+	for i := 0; i < numSubstrings; i++ {
+		start := i * n
+		end := (i + 1) * n
+		if end > len(s) {
+			end = len(s)
+		}
+		substrings[i] = s[start:end]
+	}
+	for i, s := range substrings {
+		ui.Draw(gui.NewText(x, y+i, s, nil))
+	}
+}
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
 }
