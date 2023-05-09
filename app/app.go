@@ -61,6 +61,7 @@ func Start() {
 					log.Fatal(err)
 					return
 				}
+				break
 			}
 			token, game, layout, err = client.InitGame(client.Game{WPBot: false})
 			oppName := ""
