@@ -13,6 +13,9 @@ import (
 const (
 	httpApiUrlAddress = "https://go-pjatk-server.fly.dev/api"
 	httpClientTimeout = time.Duration(30) * time.Second
+	initGameDelay     = 2 * time.Second
+	boardDelay        = time.Millisecond * 300
+	statusDelay       = time.Millisecond * 300
 )
 
 type PlayerStatus struct {
@@ -21,7 +24,7 @@ type PlayerStatus struct {
 }
 
 type PlayerList struct {
-	PlayerList []PlayerStatus
+	Players []PlayerStatus
 }
 
 type Game struct {
@@ -58,7 +61,7 @@ type ShotResult struct {
 }
 
 func InitGame(game Game) (string, Game, []string, error) {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game")
 	if err != nil {
 		log.Fatal(err)
 		return "", Game{}, nil, err
@@ -70,7 +73,7 @@ func InitGame(game Game) (string, Game, []string, error) {
 		return "", Game{}, nil, err
 	}
 
-	resp, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(gameJSON))
+	resp, err := http.NewRequest(http.MethodPost, path, bytes.NewBuffer(gameJSON))
 	if err != nil {
 		log.Fatal(err)
 		return "", Game{}, nil, err
@@ -87,31 +90,7 @@ func InitGame(game Game) (string, Game, []string, error) {
 	defer response.Body.Close()
 
 	token := response.Header.Get("X-Auth-Token")
-	time.Sleep(2 * time.Second)
 
-	resp, err = http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
-	}
-	resp.Header.Set("X-Auth-Token", token)
-	response, err = client.Do(resp)
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
-	}
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
-	}
-
-	err = json.Unmarshal(body, &game)
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
-	}
 	layout, err := Board(token)
 	if err != nil {
 		log.Fatal(err)
@@ -119,7 +98,7 @@ func InitGame(game Game) (string, Game, []string, error) {
 	}
 
 	game.Coords = layout
-	time.Sleep(1 * time.Second)
+	time.Sleep(initGameDelay)
 	return token, game, layout, err
 
 }
@@ -128,13 +107,13 @@ func Board(token string) ([]string, error) {
 		Board []string `json:"board"`
 	}
 
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/board")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game/board")
 	if err != nil {
 		log.Fatal(err)
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return nil, err
@@ -164,18 +143,18 @@ func Board(token string) ([]string, error) {
 		log.Fatal(err)
 		return nil, err
 	}
-	time.Sleep(time.Millisecond * 300)
+	time.Sleep(boardDelay)
 	return board.Board, err
 }
 
 func Status(token string) (*StatusResponse, error) {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game")
 	var statusResponse StatusResponse
 	if err != nil {
 		log.Fatal(err)
 		return &statusResponse, err
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return &statusResponse, err
@@ -203,7 +182,7 @@ func Status(token string) (*StatusResponse, error) {
 		log.Fatal(err)
 		return &statusResponse, err
 	}
-	time.Sleep(time.Millisecond * 300)
+	time.Sleep(statusDelay)
 	return &statusResponse, err
 }
 func Fire(token string, coord string) (string, error) {
@@ -214,12 +193,12 @@ func Fire(token string, coord string) (string, error) {
 		return "", err
 	}
 	payload := bytes.NewReader(shotJson)
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/fire")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game/fire")
 	if err != nil {
 		log.Fatal(err)
 		return "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, payload)
+	req, err := http.NewRequest(http.MethodPost, path, payload)
 	if err != nil {
 		log.Fatal(err)
 		return "", err
@@ -251,12 +230,12 @@ func Fire(token string, coord string) (string, error) {
 	return shotRes.Result, err
 }
 func Description(token string) (GameDesc, error) {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/desc")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game/desc")
 	if err != nil {
 		log.Fatal(err)
 		return GameDesc{}, err
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return GameDesc{}, err
@@ -290,12 +269,12 @@ func Description(token string) (GameDesc, error) {
 }
 
 func GetPlayers() (PlayerList, error) {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/list")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game/list")
 	if err != nil {
 		log.Fatal(err)
 		return PlayerList{}, err
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return PlayerList{}, err
@@ -321,17 +300,17 @@ func GetPlayers() (PlayerList, error) {
 		return PlayerList{}, err
 	}
 	time.Sleep(time.Millisecond * 300)
-	return PlayerList{PlayerList: arr}, err
+	return PlayerList{Players: arr}, err
 }
 
 func Abandon(token string) error {
-	url, err := url.JoinPath(httpApiUrlAddress, "/game/abandon")
+	path, err := url.JoinPath(httpApiUrlAddress, "/game/abandon")
 	if err != nil {
 		log.Fatal(err)
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	req, err := http.NewRequest(http.MethodDelete, path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return err
