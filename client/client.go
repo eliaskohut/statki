@@ -14,7 +14,8 @@ const (
 	httpAPIURLAddress = "https://go-pjatk-server.fly.dev/api"
 )
 
-var (
+const (
+	clientTimeout    = time.Second * 30
 	contentType      = "application/json"
 	initGameDelay    = 1 * time.Second
 	boardDelay       = time.Millisecond * 300
@@ -33,7 +34,9 @@ type Client struct {
 
 func NewClient() *Client {
 	return &Client{
-		client:  &http.Client{},
+		client: &http.Client{
+			Timeout: clientTimeout,
+		},
 		baseURL: httpAPIURLAddress,
 	}
 }
@@ -91,7 +94,8 @@ func (c *Client) GetBoard() (Board, error) {
 func (c *Client) GetStatus() (StatusResponse, error) {
 	if c.token != "" {
 		urlPath := c.buildURL("/game")
-		req, err := c.newRequest(http.MethodGet, urlPath, nil)
+		reqBody := bytes.NewReader([]byte{})
+		req, err := c.newRequest(http.MethodGet, urlPath, reqBody)
 		if err != nil {
 			return StatusResponse{}, fmt.Errorf("GetStatus: sendRequest: %w", err)
 		}
@@ -175,8 +179,9 @@ func (c *Client) GetDescription() (GameDesc, error) {
 }
 
 func (c *Client) GetPlayers() (PlayersStatus, error) {
-	urlPath := c.buildURL("/game/lobby")
-	req, err := c.newRequest(http.MethodPost, urlPath, nil)
+	urlPath := c.buildURL("/lobby")
+	reqBody := bytes.NewReader([]byte{})
+	req, err := c.newRequest(http.MethodGet, urlPath, reqBody)
 	if err != nil {
 		return PlayersStatus{}, fmt.Errorf("GetPlayers: sendRequest: %w", err)
 	}
