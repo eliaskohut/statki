@@ -2,330 +2,232 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"io/ioutil"
-	"log"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 )
 
 const (
-	httpApiUrlAddress = "https://go-pjatk-server.fly.dev/api"
-	httpClientTimeout = time.Duration(30) * time.Second
-	initGameDelay     = 2 * time.Second
-	boardDelay        = time.Millisecond * 300
-	statusDelay       = time.Millisecond * 300
+	httpAPIURLAddress = "https://go-pjatk-server.fly.dev/api"
 )
 
-type PlayerStatus struct {
-	GameStatus string `json:"game_status"`
-	Nick       string `json:"nick"`
+var (
+	contentType      = "application/json"
+	initGameDelay    = 1 * time.Second
+	boardDelay       = time.Millisecond * 300
+	statusDelay      = time.Millisecond * 300
+	fireDelay        = time.Millisecond * 300
+	descriptionDelay = time.Millisecond * 300
+	playersDelay     = time.Millisecond * 300
+	abandonDelay     = time.Millisecond * 300
+)
+
+type Client struct {
+	client  *http.Client
+	baseURL string
+	token   string
 }
 
-type PlayerList struct {
-	Players []PlayerStatus
-}
-
-type Game struct {
-	Coords     []string `json:"coords"`
-	Desc       string   `json:"desc"`
-	Nick       string   `json:"nick"`
-	TargetNick string   `json:"target_nick"`
-	WPBot      bool     `json:"wpbot"`
-}
-
-type StatusResponse struct {
-	GameStatus     string   `json:"game_status"`
-	LastGameStatus string   `json:"last_game_status"`
-	Nick           string   `json:"nick"`
-	OppShots       []string `json:"opp_shots"`
-	Opponent       string   `json:"opponent"`
-	ShouldFire     bool     `json:"should_fire"`
-	Timer          int      `json:"timer"`
-}
-
-type GameDesc struct {
-	Desc     string `json:"desc"`
-	Nick     string `json:"nick"`
-	OppDesc  string `json:"opp_desc"`
-	Opponent string `json:"opponent"`
-}
-
-type Shot struct {
-	Coord string `json:"coord"`
-}
-
-type ShotResult struct {
-	Result string `json:"result"`
-}
-
-func InitGame(game Game) (string, Game, []string, error) {
-	path, err := url.JoinPath(httpApiUrlAddress, "/game")
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
+func NewClient() *Client {
+	return &Client{
+		client:  &http.Client{},
+		baseURL: httpAPIURLAddress,
 	}
+}
 
+func (c *Client) InitGame(game Game) (Game, error) {
+	urlPath := c.buildURL("/game")
 	gameJSON, err := json.Marshal(game)
 	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
+		return Game{}, fmt.Errorf("InitGame: json.Marshal: %v", err)
 	}
-
-	resp, err := http.NewRequest(http.MethodPost, path, bytes.NewBuffer(gameJSON))
+	req, err := c.newRequest(http.MethodPost, urlPath, bytes.NewReader(gameJSON))
 	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
+		return Game{}, fmt.Errorf("InitGame: sendRequest: %w", err)
 	}
-	resp.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-	response, err := client.Do(resp)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
+		return Game{}, fmt.Errorf("InitGame: client.Do(req): %w", err)
 	}
-	defer response.Body.Close()
-
-	token := response.Header.Get("X-Auth-Token")
-
-	layout, err := Board(token)
-	if err != nil {
-		log.Fatal(err)
-		return "", Game{}, nil, err
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Game{}, fmt.Errorf("InitGame: unexpected response status: %s", resp.Status)
 	}
-
-	game.Coords = layout
+	c.token = resp.Header.Get("X-Auth-Token")
 	time.Sleep(initGameDelay)
-	return token, game, layout, err
-
-}
-func Board(token string) ([]string, error) {
-	type Board struct {
-		Board []string `json:"board"`
-	}
-
-	path, err := url.JoinPath(httpApiUrlAddress, "/game/board")
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, path, nil)
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
-	}
-
-	req.Header.Set("X-Auth-Token", token)
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-
-	response, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
-	}
-
-	var board Board
-	err = json.Unmarshal(body, &board)
-	if err != nil {
-		log.Fatal(err)
-		return nil, err
-	}
-	time.Sleep(boardDelay)
-	return board.Board, err
+	return game, nil
 }
 
-func Status(token string) (*StatusResponse, error) {
-	path, err := url.JoinPath(httpApiUrlAddress, "/game")
-	var statusResponse StatusResponse
-	if err != nil {
-		log.Fatal(err)
-		return &statusResponse, err
+func (c *Client) GetBoard() (Board, error) {
+	if c.token != "" {
+		urlPath := c.buildURL("/game/board")
+		req, err := c.newRequest(http.MethodGet, urlPath, nil)
+		if err != nil {
+			return Board{}, fmt.Errorf("GetBoard: sendRequest: %w", err)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return Board{}, fmt.Errorf("GetBoard: client.Do(req): %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return Board{}, fmt.Errorf("GetBoard: unexpected response status: %s", resp.Status)
+		}
+		var board Board
+		err = json.NewDecoder(resp.Body).Decode(&board)
+		if err != nil {
+			return Board{}, fmt.Errorf("GetBoard: error decoding response body: %w", err)
+		}
+		time.Sleep(boardDelay)
+		return board, nil
+	} else {
+		return Board{}, fmt.Errorf("GetBoard: no token")
 	}
-	req, err := http.NewRequest(http.MethodGet, path, nil)
-	if err != nil {
-		log.Fatal(err)
-		return &statusResponse, err
-	}
-
-	req.Header.Set("X-Auth-Token", token)
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-
-	response, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-		return &statusResponse, err
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-		return &statusResponse, err
-	}
-	err = json.Unmarshal(body, &statusResponse)
-	if err != nil {
-		log.Fatal(err)
-		return &statusResponse, err
-	}
-	time.Sleep(statusDelay)
-	return &statusResponse, err
-}
-func Fire(token string, coord string) (string, error) {
-	shot := Shot{Coord: coord}
-	shotJson, err := json.Marshal(shot)
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-	payload := bytes.NewReader(shotJson)
-	path, err := url.JoinPath(httpApiUrlAddress, "/game/fire")
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-	req, err := http.NewRequest(http.MethodPost, path, payload)
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-	req.Header.Set("X-Auth-Token", token)
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-	response, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-
-	var shotRes ShotResult
-	err = json.Unmarshal(body, &shotRes)
-	if err != nil {
-		log.Fatal(err)
-		return "", err
-	}
-	time.Sleep(time.Millisecond * 300)
-	return shotRes.Result, err
-}
-func Description(token string) (GameDesc, error) {
-	path, err := url.JoinPath(httpApiUrlAddress, "/game/desc")
-	if err != nil {
-		log.Fatal(err)
-		return GameDesc{}, err
-	}
-	req, err := http.NewRequest(http.MethodGet, path, nil)
-	if err != nil {
-		log.Fatal(err)
-		return GameDesc{}, err
-	}
-
-	req.Header.Set("X-Auth-Token", token)
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-
-	response, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-		return GameDesc{}, err
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatal(err)
-		return GameDesc{}, err
-	}
-	var gameDesc GameDesc
-	err = json.Unmarshal(body, &gameDesc)
-	if err != nil {
-		log.Fatal(err)
-		return GameDesc{}, err
-	}
-	time.Sleep(time.Millisecond * 300)
-	return gameDesc, err
 }
 
-func GetPlayers() (PlayerList, error) {
-	path, err := url.JoinPath(httpApiUrlAddress, "/game/list")
-	if err != nil {
-		log.Fatal(err)
-		return PlayerList{}, err
+func (c *Client) GetStatus() (StatusResponse, error) {
+	if c.token != "" {
+		urlPath := c.buildURL("/game")
+		req, err := c.newRequest(http.MethodGet, urlPath, nil)
+		if err != nil {
+			return StatusResponse{}, fmt.Errorf("GetStatus: sendRequest: %w", err)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return StatusResponse{}, fmt.Errorf("GetStatus: client.Do(req): %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return StatusResponse{}, fmt.Errorf("GetStatus: unexpected response status: %s", resp.Status)
+		}
+		var status StatusResponse
+		err = json.NewDecoder(resp.Body).Decode(&status)
+		if err != nil {
+			return StatusResponse{}, fmt.Errorf("GetStatus: error decoding response body: %w", err)
+		}
+		time.Sleep(statusDelay)
+		return status, nil
+	} else {
+		return StatusResponse{}, fmt.Errorf("GetStatus: no token")
 	}
-	req, err := http.NewRequest(http.MethodGet, path, nil)
-	if err != nil {
-		log.Fatal(err)
-		return PlayerList{}, err
+}
+
+func (c *Client) Shoot(coord string) (string, error) {
+	if c.token != "" {
+		urlPath := c.buildURL("/game/fire")
+		shot := Shot{Coord: coord}
+		shotJSON, err := json.Marshal(shot)
+		if err != nil {
+			return "", fmt.Errorf("Shoot: json.Marshal: %w", err)
+		}
+		req, err := c.newRequest(http.MethodPost, urlPath, bytes.NewReader(shotJSON))
+		if err != nil {
+			return "", fmt.Errorf("Shoot: sendRequest: %w", err)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("Shoot: client.Do(req): %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("Shoot: unexpected response status: %s", resp.Status)
+		}
+		var result ShotResult
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		if err != nil {
+			return "", fmt.Errorf("Shoot: error decoding response body: %w", err)
+		}
+		time.Sleep(fireDelay)
+		return result.Result, nil
+	} else {
+		return "", fmt.Errorf("Shoot: no token")
 	}
-	client := &http.Client{
-		Timeout: httpClientTimeout,
+}
+
+func (c *Client) GetDescription() (GameDesc, error) {
+	if c.token != "" {
+		urlPath := c.buildURL("/game/desc")
+		req, err := c.newRequest(http.MethodGet, urlPath, nil)
+		if err != nil {
+			return GameDesc{}, fmt.Errorf("GetDescription: sendRequest: %w", err)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return GameDesc{}, fmt.Errorf("GetDescription: client.Do(req): %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return GameDesc{}, fmt.Errorf("GetDescription: unexpected response status: %s", resp.Status)
+		}
+		var desc GameDesc
+		err = json.NewDecoder(resp.Body).Decode(&desc)
+		if err != nil {
+			return GameDesc{}, fmt.Errorf("GetDescription: error decoding response body: %w", err)
+		}
+		time.Sleep(descriptionDelay)
+		return desc, nil
+	} else {
+		return GameDesc{}, fmt.Errorf("GetDescription: no token")
 	}
-	resp, err := client.Do(req)
+}
+
+func (c *Client) GetPlayers() (PlayersStatus, error) {
+	urlPath := c.buildURL("/game/lobby")
+	req, err := c.newRequest(http.MethodPost, urlPath, nil)
 	if err != nil {
-		log.Fatal(err)
-		return PlayerList{}, err
+		return PlayersStatus{}, fmt.Errorf("GetPlayers: sendRequest: %w", err)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return PlayersStatus{}, fmt.Errorf("GetPlayers: client.Do(req): %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatal(err)
-		return PlayerList{}, err
+	if resp.StatusCode != http.StatusOK {
+		return PlayersStatus{}, fmt.Errorf("GetPlayers: unexpected response status: %s", resp.Status)
 	}
-	var arr []PlayerStatus
-	err = json.Unmarshal(body, &arr)
+	var players PlayersStatus
+	err = json.NewDecoder(resp.Body).Decode(&players)
 	if err != nil {
-		log.Fatal(err)
-		return PlayerList{}, err
+		return PlayersStatus{}, fmt.Errorf("GetPlayers: error decoding response body: %w", err)
 	}
-	time.Sleep(time.Millisecond * 300)
-	return PlayerList{Players: arr}, err
+	time.Sleep(playersDelay)
+	return players, nil
 }
 
-func Abandon(token string) error {
-	path, err := url.JoinPath(httpApiUrlAddress, "/game/abandon")
+func (c *Client) Abandon() error {
+	urlPath := c.buildURL("/game/abandon")
+	req, err := c.newRequest(http.MethodDelete, urlPath, nil)
 	if err != nil {
-		log.Fatal(err)
-		return err
+		return fmt.Errorf("Abandon: sendRequest: %w", err)
 	}
-
-	req, err := http.NewRequest(http.MethodDelete, path, nil)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		log.Fatal(err)
-		return err
-	}
-
-	req.Header.Set("X-Auth-Token", token)
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-		return err
+		return fmt.Errorf("Abandon: client.Do(req): %w", err)
 	}
 	defer resp.Body.Close()
-	time.Sleep(time.Millisecond * 300)
-	return err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Abandon: unexpected response status: %s", resp.Status)
+	}
+	time.Sleep(abandonDelay)
+	return nil
+}
+
+func (c *Client) buildURL(endpoint string) string {
+	baseURL, _ := url.Parse(c.baseURL)
+	return baseURL.JoinPath(endpoint).String()
+}
+
+func (c *Client) newRequest(method, url string, body *bytes.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(context.Background(), method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("newRequest: http.NewRequestWithContext: %w", err)
+	}
+	if c.token != "" {
+		req.Header.Set("X-Auth-Token", c.token)
+	}
+	req.Header.Set("Content-Type", contentType)
+	return req, nil
 }
