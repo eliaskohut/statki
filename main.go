@@ -1,9 +1,7 @@
 package main
 
-import "main/app"
-
-var (
-	selectedOption string
+import (
+	"main/app"
 )
 
 func main() {

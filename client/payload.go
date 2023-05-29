@@ -41,3 +41,14 @@ type Shot struct {
 type ShotResult struct {
 	Result string `json:"result"`
 }
+type Stats struct {
+	Games  int    `json:"games"`
+	Nick   string `json:"nick"`
+	Points int    `json:"points"`
+	Rank   int    `json:"rank"`
+	Wins   int    `json:"wins"`
+}
+
+type StatsList struct {
+	Stats []Stats `json:"stats"`
+}
