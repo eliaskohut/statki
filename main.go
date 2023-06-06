@@ -1,7 +1,10 @@
 package main
 
-import "main/app"
+import (
+	"main/app"
+)
 
 func main() {
-	app.Start()
+	game := app.App{}
+	game.Start()
 }

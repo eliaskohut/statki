@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="RemoteTargetsManager">
+    <targets>
+      <target name="WSL - Ubuntu" type="wsl" uuid="9849a24a-104f-4480-b42c-24134151f94a">
+        <config>
+          <option name="distributionMsId" value="Ubuntu" />
+          <option name="projectRootOnTarget" value="/mnt/c/Users/Elias/AppData/Local/JetBrains/Toolbox/apps/Goland/ch-0/231.9011.34/jbr/bin&#10;/statki" />
+        </config>
+        <ContributedStateBase type="GoLanguageRuntime">
+          <config>
+            <option name="goPath" value="/mnt/c/Users/Elias/go" />
+            <option name="goRoot" value="/snap/bin/go" />
+            <option name="goVersion" value="go1.20.4 linux/amd64" />
+          </config>
+        </ContributedStateBase>
+      </target>
+    </targets>
+  </component>
+</project>
