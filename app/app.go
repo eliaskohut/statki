@@ -7,104 +7,66 @@ import (
 	"github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
 	gui "github.com/grupawp/warships-gui/v2"
+	"github.com/micmonay/keybd_event"
 	"log"
 	"main/client"
-	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	waitingTime    = time.Second / 3
-	squarePickTime = time.Millisecond * 10
-	countdownTime  = 30
-	hitRes         = "hit"
-	missRes        = "miss"
-	sunkRes        = "sunk"
-	blankRes       = ""
-	fourTileCount  = 1
-	threeTileCount = 2
-	twoTileCount   = 3
-	oneTileCount   = 4
-	yBoards        = 8
-	xPBoard        = 1
-	xOBoard        = 55
+	waitingTime   = time.Second / 3
+	countdownTime = 30
+	hitRes        = "hit"
+	missRes       = "miss"
+	sunkRes       = "sunk"
+	blankRes      = ""
+	yBoards       = 8
+	xPBoard       = 1
+	xOBoard       = 100
 )
 
 var (
-	ctx = context.TODO()
+	pCtx = context.TODO()
 )
-
-type App struct {
-	Client      *client.Client
-	PlayerBoard []string
-	Nick        string
-	TargetNick  string
-	Status      client.StatusResponse
-	Desc        string
-	ODesc       string
-}
-
-type GuiConstruct struct {
-	Board     *gui.Board
-	FourTile  *gui.Text
-	ThreeTile *gui.Text
-	TwoTile   *gui.Text
-	OneTile   *gui.Text
-	Ui        *gui.GUI
-}
-
-type GuiBattle struct {
-	PlayerBoard         *gui.Board
-	PlayerBoardStates   [10][10]gui.State
-	OpponentBoard       *gui.Board
-	OpponentBoardStates [10][10]gui.State
-	PlayerNick          *gui.Text
-	OpponentNick        *gui.Text
-	PlayerAccuracy      *gui.Text
-	OpponentAccuracy    *gui.Text
-	ShouldFire          *gui.Text
-	Exit                *gui.Text
-	Timer               *gui.Text
-	ShotResult          *gui.Text
-	Ui                  *gui.GUI
-}
 
 func (a *App) Start() {
 	for {
-		time.Sleep(time.Second * 2)
-		a.Client = client.NewClient()
-		game, err := a.getDetails(a.Client)
+		ctx, cancelCtx := context.WithCancel(pCtx)
+		ctxFleet, cancelCtxFleet := context.WithCancel(pCtx)
+		ui, err := a.makeUI()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("app Start() 4, a.makeUI(); %v", err)
+		}
+		a.Ui = ui
+		a.Client = client.NewClient()
+		game, err := a.getDetails(a.Client, ctxFleet, cancelCtxFleet)
+		if err != nil {
+			log.Fatalf("app Start() 1, a.getDetails(); %v", err)
 		}
 
 		if a.Client.Token != "" {
 			a.Status, err = a.Client.GetStatus()
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("app Start() 2, client.GetStatus(); %v", err)
 			}
 
 			gameDesc, err := a.Client.GetDescription()
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("app Start() 3, client.GetDescription(); %v", err)
 			}
 			a.Nick = gameDesc.Nick
 			a.Desc = gameDesc.Desc
 			a.TargetNick = gameDesc.Opponent
 			a.ODesc = gameDesc.OppDesc
 
-			ui, err := a.makeUI()
-			if err != nil {
-				return
-			}
-
 			guiBattle := a.buildBattlefield(ui)
 
 			ans, err := a.Client.GetBoard()
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("app Start() 5, client.GetBoard(); %v", err)
 			}
 			layout := ans.Board
 
@@ -113,8 +75,7 @@ func (a *App) Start() {
 			var mapped [][]int
 			mapped, err = a.mappingChars(layout)
 			if err != nil {
-				log.Fatal(err)
-				return
+				log.Fatalf("app Start() 6, a.mappingChars(); %v", err)
 			}
 			states := [10][10]gui.State{}
 			for _, i := range mapped {
@@ -123,30 +84,46 @@ func (a *App) Start() {
 			guiBattle.PlayerBoardStates = states
 			guiBattle.PlayerBoard.SetStates(states)
 
-			go a.startBattle(guiBattle)
+			go a.startBattle(guiBattle, ctx, cancelCtx)
 
 			guiBattle.Ui.Start(ctx, nil)
 
 			fmt.Println(game)
 		} else {
-			fmt.Println("Successfully finished")
+			cancelCtx()
 			break
 		}
-
 	}
 }
 
-func (a *App) timerUpdate(guiB *GuiBattle) {
+func (a *App) timerUpdate(guiB *GuiBattle, ctx context.Context, cancelCtx context.CancelFunc) {
 	var winner string
 	quitChan := make(chan bool)
+	if a.Client.Token == "" {
+		return
+	}
 	for a.Status.GameStatus != "ended" {
-		time.Sleep(time.Millisecond * 200)
-		var err error
-		a.Status, err = a.Client.GetStatus()
-		if err != nil {
-			log.Fatal(err)
+		select {
+		default:
+			var err error
+			if a.Client.Token != "" {
+				a.Status, err = a.Client.GetStatus()
+				if err != nil {
+					log.Fatalf("app timerUpdate() 7, client.GetStatus(); %v", err)
+				}
+				guiB.Timer.SetText(fmt.Sprintf("Time: %v", a.Status.Timer))
+			} else {
+				cancelCtx()
+			}
+		case <-ctx.Done():
+			if a.Client.Token != "" {
+				err := a.Client.Abandon()
+				if err != nil {
+					log.Fatalf("app timerUpdate() 8, client.Abandon(); %v", err)
+				}
+			}
+			quitChan <- true
 		}
-		guiB.Timer.SetText(fmt.Sprintf("Time: %v", a.Status.Timer))
 	}
 	winner = a.Nick
 	if a.Status.LastGameStatus == "lose" {
@@ -158,6 +135,7 @@ func (a *App) timerUpdate(guiB *GuiBattle) {
 	guiB.Ui.Remove(guiB.OpponentNick)
 	guiB.Ui.Remove(guiB.OpponentBoard)
 	guiB.Ui.Remove(guiB.ShotResult)
+	guiB.Ui.Remove(guiB.OppShotResult)
 	guiB.Ui.Remove(guiB.ShouldFire)
 	guiB.Ui.Remove(guiB.Timer)
 	guiB.Ui.Remove(guiB.OpponentAccuracy)
@@ -165,108 +143,169 @@ func (a *App) timerUpdate(guiB *GuiBattle) {
 	guiB.Exit.SetText("To start a new game press CTRL+C")
 	quitChan <- true
 }
+func (a *App) getAdjacentCoordinates(coord string) []string {
+	row := int(coord[1] - '1')
+	col := int(coord[0] - 'A')
+	directions := [8][2]int{
+		{-1, -1}, {-1, 0}, {-1, 1},
+		{0, -1}, {0, 1},
+		{1, -1}, {1, 0}, {1, 1},
+	}
 
-func (a *App) startBattle(guiB *GuiBattle) {
-	var winner string
+	adjacentCoords := make([]string, 0)
+
+	for _, dir := range directions {
+		newRow := row + dir[0]
+		newCol := col + dir[1]
+		if newRow >= 0 && newRow < 10 && newCol >= 0 && newCol < 10 {
+			newCoord := fmt.Sprintf("%c%d", 'A'+newCol, newRow+1)
+			adjacentCoords = append(adjacentCoords, newCoord)
+		}
+	}
+
+	return adjacentCoords
+}
+
+func (a *App) markAdjacentMisses(guiB *GuiBattle, hitShots []string, char string) {
+	adjacentCoords := make(map[string]bool)
+
+	// Iterate over each hitShot and collect all adjacent coordinates
+	for _, shot := range hitShots {
+		coords := a.getAdjacentCoordinates(shot)
+		for _, coord := range coords {
+			adjacentCoords[coord] = true
+		}
+	}
+
+	// Mark adjacent tiles as Miss
+	for coord := range adjacentCoords {
+		row := int(coord[1] - '1')
+		col := int(coord[0] - 'A')
+
+		if guiB.OpponentBoardStates[row][col] != gui.Hit {
+			guiB.OpponentBoardStates[row][col] = gui.Miss
+		}
+	}
+}
+
+func (a *App) startBattle(guiB *GuiBattle, ctx context.Context, cancelCtx context.CancelFunc) {
 	var err error
-	var acc float64
-	var oppAcc float64
 	shots := make([]string, 0)
 	hitShots := make([]string, 0)
 	oppHitShots := make([]string, 0)
 	quitChan := make(chan bool)
-	go a.timerUpdate(guiB)
+	go a.timerUpdate(guiB, ctx, cancelCtx)
 	a.Status, err = a.Client.GetStatus()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("app startBattle() 9, client.GetStatus(); %v", err)
 	}
+	board, err := a.Client.GetBoard()
+	if err != nil {
+		log.Fatalf("app startBattle() 10, client.GetBoard(); %v", err)
+	}
+	a.PlayerBoard = board.Board
 	for a.Status.GameStatus != "ended" {
-		a.Status, err = a.Client.GetStatus()
-		if err != nil {
-			log.Fatal(err)
-		}
-		if a.Status.ShouldFire {
-			for _, shot := range a.Status.OppShots {
-				x, y, err := a.stringCoordToInt(shot)
-				if err != nil {
-					log.Fatal(err)
-					return
-				}
-				if a.contains(shot, a.PlayerBoard) {
-					guiB.PlayerBoardStates[x][y-1] = gui.Hit
-					oppHitShots = append(oppHitShots, shot)
-				} else {
-					guiB.PlayerBoardStates[x][y-1] = gui.Miss
-				}
-			}
-			if len(oppHitShots) != 0 {
-				oppAcc = float64(len(oppHitShots) / len(a.Status.OppShots))
-				if oppAcc != math.NaN() {
-					guiB.OpponentAccuracy.SetText(fmt.Sprintf("Accuracy: %v", oppAcc))
-				} else {
-					guiB.OpponentAccuracy.SetText(fmt.Sprintf("Accuracy: %v", 0))
-				}
-			} else {
-				guiB.PlayerAccuracy.SetText(fmt.Sprintf("Accuracy: %v", 0))
-			}
-			guiB.PlayerBoard.SetStates(guiB.PlayerBoardStates)
-			guiB.ShouldFire.SetText("Fire!")
-			guiB.ShouldFire.SetFgColor(gui.Green)
-			char := guiB.OpponentBoard.Listen(ctx)
-			x, y, err := a.stringCoordToInt(char)
-			if err != nil {
-				log.Fatal(err)
-				return
-			}
-			for guiB.OpponentBoardStates[x][y-1] == gui.Miss || guiB.OpponentBoardStates[x][y-1] == gui.Hit {
-				guiB.ShouldFire.SetText("You can't fire there!")
-				char = guiB.OpponentBoard.Listen(ctx)
-				x, y, err = a.stringCoordToInt(char)
-				if err != nil {
-					log.Fatal(err)
-					return
-				}
-			}
-			shots = append(shots, char)
-			result, err := a.Client.Shoot(char)
-			if err != nil {
-				log.Fatal(err)
-				return
-			}
-			if result == hitRes || result == sunkRes {
-				hitShots = append(hitShots, char)
-				guiB.OpponentBoardStates[x][y-1] = gui.Hit
-			} else if result == blankRes {
-				continue
-			} else if result == missRes {
-				guiB.OpponentBoardStates[x][y-1] = gui.Miss
-			}
-			guiB.OpponentBoard.SetStates(guiB.OpponentBoardStates)
-			guiB.ShotResult.SetText(fmt.Sprintf("%s on %s", result, char))
-			if len(hitShots) != 0 {
-				acc = float64(len(hitShots) / len(shots))
-				if acc != math.NaN() {
-					guiB.PlayerAccuracy.SetText(fmt.Sprintf("Accuracy: %v", acc))
-				} else {
-					guiB.PlayerAccuracy.SetText(fmt.Sprintf("Accuracy: %v", 0))
-				}
-			} else {
-				guiB.PlayerAccuracy.SetText(fmt.Sprintf("Accuracy: %v", 0))
-			}
-		} else {
-			guiB.ShouldFire.SetText("It's not your turn!")
-			guiB.ShouldFire.SetFgColor(gui.Red)
+		select {
+		default:
+			time.Sleep(waitingTime)
 			a.Status, err = a.Client.GetStatus()
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("app startBattle() 11, client.GetStatus(); %v", err)
 			}
-		}
-		a.Status, err = a.Client.GetStatus()
-		if err != nil {
-			log.Fatal(err)
+			if a.Status.ShouldFire {
+				for _, shot := range a.Status.OppShots {
+					res := ""
+					x, y, err := a.stringCoordToInt(shot)
+					if err != nil {
+						log.Fatalf("app startBattle() 12, a.stringCoordToInt(); %v", err)
+					}
+					if a.contains(shot, a.PlayerBoard) && guiB.PlayerBoardStates[x][y-1] != gui.Hit {
+						guiB.PlayerBoardStates[x][y-1] = gui.Hit
+						oppHitShots = append(oppHitShots, shot)
+						res = "hit"
+					} else if !a.contains(shot, a.PlayerBoard) {
+						guiB.PlayerBoardStates[x][y-1] = gui.Miss
+						res = "miss"
+					}
+					guiB.OppShotResult.SetText(fmt.Sprintf("%s, %s on %s", a.TargetNick, res, shot))
+				}
+				guiB.OpponentAccuracy.SetText(fmt.Sprintf("Accuracy: %v / %v", len(oppHitShots), len(a.Status.OppShots)))
+				guiB.PlayerBoard.SetStates(guiB.PlayerBoardStates)
+				guiB.ShouldFire.SetText("Fire!")
+				guiB.ShouldFire.SetFgColor(gui.Green)
+				char := guiB.OpponentBoard.Listen(ctx)
+				select {
+				case <-ctx.Done():
+					quitChan <- true
+				default:
+					break
+				}
+				x, y, err := a.stringCoordToInt(char)
+				if err != nil {
+					log.Fatalf("app startBattle() 13, a.stringCoordToInt(); %v", err)
+				}
+				for guiB.OpponentBoardStates[x][y-1] == gui.Miss || guiB.OpponentBoardStates[x][y-1] == gui.Hit {
+					guiB.ShouldFire.SetText("You can't fire there!")
+					char = guiB.OpponentBoard.Listen(ctx)
+					x, y, err = a.stringCoordToInt(char)
+					if err != nil {
+						log.Fatalf("app startBattle() 14, a.stringCoordToInt(); %v", err)
+					}
+				}
+				if a.Status.GameStatus == "ended" {
+					break
+				}
+				shots = append(shots, char)
+				result, err := a.Client.Shoot(char)
+				if err != nil {
+					log.Fatalf("app startBattle() 15, client.Shoot(); %v", err)
+				}
+				if result == hitRes {
+					hitShots = append(hitShots, char)
+					guiB.OpponentBoardStates[x][y-1] = gui.Hit
+				} else if result == sunkRes {
+					hitShots = append(hitShots, char)
+					x, y, err := a.stringCoordToInt(char)
+					if err != nil {
+						log.Fatalf("app startBattle() miss check, a.stringCoordToInt(); %v", err)
+					}
+					guiB.OpponentBoardStates[x][y-1] = gui.Hit
+
+					//a.markAdjacentMisses(guiB, hitShots, char)
+				} else if result == blankRes {
+					continue
+				} else if result == missRes {
+					guiB.OpponentBoardStates[x][y-1] = gui.Miss
+					guiB.ShouldFire.SetText("It's not your turn!")
+					guiB.ShouldFire.SetFgColor(gui.Red)
+				}
+				guiB.OpponentBoard.SetStates(guiB.OpponentBoardStates)
+				guiB.ShotResult.SetText(fmt.Sprintf("%s, %s on %s", a.Nick, result, char))
+				guiB.PlayerAccuracy.SetText(fmt.Sprintf("Accuracy: %v / %v", len(hitShots), len(shots)))
+				a.Status, err = a.Client.GetStatus()
+				if err != nil {
+					log.Fatalf("app startBattle() 20, client.GetStatus(); %v", err)
+				}
+			} else {
+				time.Sleep(waitingTime)
+				a.Status, err = a.Client.GetStatus()
+				if err != nil {
+					log.Fatalf("app startBattle() 21, client.GetStatus(); %v", err)
+				}
+			}
+			a.Status, err = a.Client.GetStatus()
+			if err != nil {
+				log.Fatalf("app startBattle() 22, client.GetStatus(); %v", err)
+			}
+		case <-ctx.Done():
+			err := a.Client.Abandon()
+			if err != nil {
+				log.Fatalf("Error abandoning, %v", err)
+			}
+			return
 		}
 	}
-	winner = a.Nick
+	winner := a.Nick
 	if a.Status.LastGameStatus == "lose" {
 		winner = a.TargetNick
 	}
@@ -276,79 +315,14 @@ func (a *App) startBattle(guiB *GuiBattle) {
 	guiB.Ui.Remove(guiB.OpponentNick)
 	guiB.Ui.Remove(guiB.OpponentBoard)
 	guiB.Ui.Remove(guiB.ShotResult)
+	guiB.Ui.Remove(guiB.OppShotResult)
 	guiB.Ui.Remove(guiB.ShouldFire)
 	guiB.Ui.Remove(guiB.Timer)
 	guiB.Ui.Remove(guiB.OpponentAccuracy)
 	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards, fmt.Sprintf("Winner: %s", winner), nil))
 	guiB.Exit.SetText("To start a new game press CTRL+C")
+	guiB.Ui.Log(fmt.Sprintf("Winner: %s", winner))
 	quitChan <- true
-}
-
-func (a *App) checkShips(coords []string) bool {
-	shipCount := map[int]int{
-		1: 4, // One-tilers
-		2: 3, // Two-tilers
-		3: 2, // Three-tilers
-		4: 1, // Four-tilers
-	}
-
-	coordMap := make(map[string]bool)
-	for _, coord := range coords {
-		coordMap[coord] = true
-	}
-
-	for size, count := range shipCount {
-		missingCount := count
-		for coord := range coordMap {
-			x, y, err := a.stringCoordToInt(coord)
-			if err != nil {
-				log.Fatalf("a.checkShips: stringCoordToInt; %v", err)
-			}
-			if a.isValidShip(coordMap, size, x, y) {
-				missingCount--
-				if missingCount == 0 {
-					break
-				}
-			}
-		}
-		if missingCount > 0 {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (a *App) isValidShip(coordMap map[string]bool, size, x, y int) bool {
-	for dx := -1; dx <= 1; dx++ {
-		for dy := -1; dy <= 1; dy++ {
-			if dx == 0 && dy == 0 {
-				continue
-			}
-			if a.isShipInOrientation(coordMap, size, x, y, dx, dy) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (a *App) isShipInOrientation(coordMap map[string]bool, size, x, y, dx, dy int) bool {
-	for i := 0; i < size; i++ {
-		newX := x + (i * dx)
-		newY := y + (i * dy)
-		if newX < 0 || newX >= 10 || newY < 1 || newY > 10 {
-			continue
-		}
-		coord, err := a.intCoordToString(newX, newY)
-		if err != nil {
-			log.Fatalf("a.isShipInOrientation: intCoordToString; %v", err)
-		}
-		if _, ok := coordMap[coord]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 var ErrInvalidCoord = errors.New("invalid coordinate")
@@ -399,7 +373,7 @@ func (a *App) mappingChars(layout []string) ([][]int, error) {
 	for _, i := range layout {
 		x, y, err := a.stringCoordToInt(i)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("app mappingChars() 25, a.stringCoordToInt(); %v", err)
 			return nil, err
 		}
 		resSlice = append(resSlice, []int{x, y})
@@ -452,8 +426,34 @@ func (a *App) getPlayerName() string {
 					termui.Render(errorMsg)
 				}
 			case "<Escape>":
-				fmt.Println("The user pressed exit")
 				termui.Close()
+				kb, err := keybd_event.NewKeyBonding()
+				if err != nil {
+					log.Fatalf("ui keybind 26, keybd_event.NewKeyBonding(); %v", err)
+				}
+				if runtime.GOOS == "linux" {
+					time.Sleep(2 * time.Second)
+				}
+
+				kb.SetKeys(keybd_event.VK_C)
+
+				kb.HasCTRL(true)
+
+				err = kb.Launching()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				err = kb.Press()
+				if err != nil {
+					log.Fatalf("ui keypress 27, kb.Press(); %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				err = kb.Release()
+				if err != nil {
+					log.Fatalf("ui keypress 28, kb.Release(); %v", err)
+				}
+				break
 			case "<Backspace>":
 				if len(name) > 0 {
 					name = name[:len(name)-1]
@@ -530,8 +530,34 @@ func (a *App) getPlayerDescription() string {
 					termui.Render(errorMsg)
 				}
 			case "<Escape>":
-				fmt.Println("The user pressed exit")
-				return ""
+				termui.Close()
+				kb, err := keybd_event.NewKeyBonding()
+				if err != nil {
+					log.Fatalf("ui keybind 29, keybd_event.NewKeyBonding(); %v", err)
+				}
+				if runtime.GOOS == "linux" {
+					time.Sleep(2 * time.Second)
+				}
+
+				kb.SetKeys(keybd_event.VK_C)
+
+				kb.HasCTRL(true)
+
+				err = kb.Launching()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				err = kb.Press()
+				if err != nil {
+					log.Fatalf("ui keypress 30, kb.Press(); %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				err = kb.Release()
+				if err != nil {
+					log.Fatalf("ui keypress 31, kb.Release(); %v", err)
+				}
+				break
 			case "<Backspace>":
 				if len(description) > 0 {
 					// Remove the last character from the description
@@ -555,13 +581,12 @@ func (a *App) validateDescription(description string) bool {
 	return len(description) >= 5 && len(description) <= 200
 }
 
-func (a *App) getDetails(c *client.Client) (client.Game, error) {
-
+func (a *App) getDetails(c *client.Client, ctx context.Context, cancelFunc context.CancelFunc) (client.Game, error) {
 	var nick string
 	var pDes string
 	game := client.Game{}
 	if err := termui.Init(); err != nil {
-		log.Fatalf("Failed to initialize termui: %v", err)
+		log.Fatalf("Failed to initialize termui 32: %v", err)
 	}
 
 	options := []string{"Play with a bot", "Wait for an opponent", "Challenge someone", "Show stats"}
@@ -575,6 +600,8 @@ func (a *App) getDetails(c *client.Client) (client.Game, error) {
 	a.triggerResize(list)
 
 	uiEvents := termui.PollEvents()
+
+mainLoop:
 	for {
 		ev := <-uiEvents
 		switch ev.Type {
@@ -593,43 +620,95 @@ func (a *App) getDetails(c *client.Client) (client.Game, error) {
 					if nick != "" {
 						termui.Clear()
 						pDes = a.getPlayerDescription()
-						game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: true})
-						if err != nil {
-							log.Fatal(err)
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
+						termui.Clear()
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: true, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 33, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: true})
+							if err != nil {
+								log.Fatalf("a.getDetails 33, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					} else {
-						game, err := c.InitGame(client.Game{WPBot: true})
-						if err != nil {
-							log.Fatal(err)
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
+						termui.Clear()
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{WPBot: true, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 34, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{WPBot: true})
+							if err != nil {
+								log.Fatalf("a.getDetails 34, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					}
 				} else if selectedOption == "Wait for an opponent" {
 					termui.Clear()
 					nick = a.getPlayerName()
 					if nick != "" {
 						termui.Clear()
+
 						pDes = a.getPlayerDescription()
-						game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false})
-						if err != nil {
-							log.Fatal(err)
+						termui.Clear()
+
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
+						termui.Clear()
+
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 35, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false})
+							if err != nil {
+								log.Fatalf("a.getDetails 35, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					} else {
-						game, err := c.InitGame(client.Game{WPBot: false})
-						if err != nil {
-							log.Fatal(err)
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
+						termui.Clear()
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{WPBot: false, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 36, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{WPBot: false})
+							if err != nil {
+								log.Fatalf("a.getDetails 36, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					}
 				} else if selectedOption == "Challenge someone" {
 					termui.Clear()
@@ -637,31 +716,56 @@ func (a *App) getDetails(c *client.Client) (client.Game, error) {
 					if nick != "" {
 						termui.Clear()
 						pDes = a.getPlayerDescription()
+
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
 						termui.Clear()
+
 						targetNick := a.getTarget(c)
 						if targetNick == "" {
 							log.Fatalf("Target nick cannot be empty")
 						}
-						game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false, TargetNick: targetNick})
-						if err != nil {
-							log.Fatal(err)
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false, TargetNick: targetNick, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 37, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{Nick: nick, Desc: pDes, WPBot: false, TargetNick: targetNick})
+							if err != nil {
+								log.Fatalf("a.getDetails 37, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					} else {
 						termui.Clear()
+						fleet := a.getLayout(a.Ui, ctx, cancelFunc)
+						termui.Clear()
 						targetNick := a.getTarget(c)
 						if targetNick == "" {
 							log.Fatalf("Target nick cannot be empty")
 						}
-						game, err := c.InitGame(client.Game{WPBot: false, TargetNick: targetNick})
-						if err != nil {
-							log.Fatal(err)
+						if len(fleet) != 0 {
+							game, err := c.InitGame(client.Game{WPBot: false, TargetNick: targetNick, Coords: fleet})
+							if err != nil {
+								log.Fatalf("a.getDetails 38, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
+						} else {
+							game, err := c.InitGame(client.Game{WPBot: false, TargetNick: targetNick})
+							if err != nil {
+								log.Fatalf("a.getDetails 38, c.InitGame; %v", err)
+							}
+							a.waitForOpponent(waitingTime)
+							termui.Close()
+							return game, nil
 						}
-						a.waitForOpponent(c, waitingTime)
-						termui.Close()
-						return game, nil
 					}
 				} else if selectedOption == "Show stats" {
 					termui.Clear()
@@ -675,15 +779,99 @@ func (a *App) getDetails(c *client.Client) (client.Game, error) {
 							i+1, stat.Games, stat.Nick, stat.Points, stat.Rank, stat.Wins)
 						stringStats = append(stringStats, str)
 					}
-					list := widgets.NewList()
-					list.Rows = stringStats
-					list.SelectedRowStyle = termui.NewStyle(termui.ColorGreen, termui.ColorBlack)
-					termui.Render(list)
-					a.triggerResize(list)
-					return game, nil
+					stringStats = append(stringStats, "Back")
+
+					statList := widgets.NewList()
+					statList.Rows = stringStats
+					statList.SelectedRowStyle = termui.NewStyle(termui.ColorGreen, termui.ColorBlack)
+
+					a.triggerResize(statList)
+					termui.Render(statList)
+
+					// Stats loop
+					for {
+						statEv := <-uiEvents
+						switch statEv.Type {
+						case termui.KeyboardEvent:
+							switch statEv.ID {
+							case "<Down>":
+								statList.ScrollDown()
+							case "<Up>":
+								statList.ScrollUp()
+							case "<Enter>":
+								selectedStat := stringStats[statList.SelectedRow]
+								if selectedStat == "Back" {
+									termui.Clear()
+									termui.Render(list)
+									continue mainLoop
+								}
+							case "<Escape>":
+								termui.Close()
+								kb, err := keybd_event.NewKeyBonding()
+								if err != nil {
+									log.Fatalf("ui keybind 39, keybd_event.NewKeyBonding(); %v", err)
+								}
+								if runtime.GOOS == "linux" {
+									time.Sleep(2 * time.Second)
+								}
+
+								kb.SetKeys(keybd_event.VK_C)
+
+								kb.HasCTRL(true)
+
+								err = kb.Launching()
+								if err != nil {
+									log.Fatal(err)
+								}
+
+								err = kb.Press()
+								if err != nil {
+									log.Fatalf("ui keypress 40, kb.Press(); %v", err)
+								}
+								time.Sleep(10 * time.Millisecond)
+								err = kb.Release()
+								if err != nil {
+									log.Fatalf("ui keypress 41, kb.Release(); %v", err)
+								}
+								break
+							}
+							termui.Render(statList)
+						case termui.ResizeEvent:
+							payload := ev.Payload.(termui.Resize)
+							termui.Clear()
+							list.SetRect(0, 0, payload.Width, payload.Height)
+							termui.Render(list)
+						}
+					}
 				}
 			case "<Escape>":
 				termui.Close()
+				kb, err := keybd_event.NewKeyBonding()
+				if err != nil {
+					log.Fatalf("ui keybind 39, keybd_event.NewKeyBonding(); %v", err)
+				}
+				if runtime.GOOS == "linux" {
+					time.Sleep(2 * time.Second)
+				}
+
+				kb.SetKeys(keybd_event.VK_C)
+
+				kb.HasCTRL(true)
+
+				err = kb.Launching()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				err = kb.Press()
+				if err != nil {
+					log.Fatalf("ui keypress 40, kb.Press(); %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				err = kb.Release()
+				if err != nil {
+					log.Fatalf("ui keypress 41, kb.Release(); %v", err)
+				}
 				break
 			}
 			termui.Render(list)
@@ -697,17 +885,95 @@ func (a *App) getDetails(c *client.Client) (client.Game, error) {
 	}
 	return game, nil
 }
+
+func (a *App) getLayout(ui *gui.GUI, ctx context.Context, cancelFunc context.CancelFunc) []string {
+	options := []string{"Yes", "No"}
+	termui.Clear()
+	list := widgets.NewList()
+	list.Title = "Do you want to build your own fleet?"
+	list.Rows = options
+	list.SelectedRowStyle = termui.NewStyle(termui.ColorGreen, termui.ColorBlack)
+	termui.Render(list)
+	a.triggerResize(list)
+
+	uiEvents := termui.PollEvents()
+	for {
+		ev := <-uiEvents
+		switch ev.Type {
+		case termui.KeyboardEvent:
+			switch ev.ID {
+			case "<Down>":
+				list.ScrollDown()
+			case "<Up>":
+				list.ScrollUp()
+			case "<Enter>":
+				selectedOption := options[list.SelectedRow]
+				if selectedOption == "Yes" {
+					fleet, err := a.makeFleet(ui, ctx, cancelFunc)
+					if err != nil {
+						log.Fatalf("app Start() 4, a.makeFleet(); %v", err)
+					}
+					return fleet
+				} else if selectedOption == "No" {
+					return nil
+				}
+			case "<Escape>":
+				termui.Close()
+				kb, err := keybd_event.NewKeyBonding()
+				if err != nil {
+					log.Fatalf("ui keybind 39, keybd_event.NewKeyBonding(); %v", err)
+				}
+				if runtime.GOOS == "linux" {
+					time.Sleep(2 * time.Second)
+				}
+
+				kb.SetKeys(keybd_event.VK_C)
+
+				kb.HasCTRL(true)
+
+				err = kb.Launching()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				err = kb.Press()
+				if err != nil {
+					log.Fatalf("ui keypress 40, kb.Press(); %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				err = kb.Release()
+				if err != nil {
+					log.Fatalf("ui keypress 41, kb.Release(); %v", err)
+				}
+				break
+			}
+			termui.Render(list)
+		case termui.ResizeEvent:
+			payload := ev.Payload.(termui.Resize)
+			termui.Clear()
+			list.SetRect(0, 0, payload.Width, payload.Height)
+			termui.Render(list)
+		}
+	}
+
+}
+
 func (a *App) getTarget(c *client.Client) string {
+	err := termui.Init()
+	if err != nil {
+		return ""
+	}
 	playerList, err := c.GetPlayers()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("a.getTarget 42, c.GetPlayers; %v", err)
 	}
+
 	arePlayers := false
 	if len(playerList) == 0 {
 		time.Sleep(waitingTime * 3)
 		playerList, err := c.GetPlayers()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("a.getTarget 43, c.GetPlayers; %v", err)
 		}
 		if len(playerList) == 0 {
 			timerMsg := widgets.NewParagraph()
@@ -728,7 +994,7 @@ func (a *App) getTarget(c *client.Client) string {
 				if countdown%2 == 0 {
 					playerList, err = c.GetPlayers()
 					if err != nil {
-						log.Fatal(err)
+						log.Fatalf("a.getTarget 44, c.GetPlayers; %v", err)
 					}
 				}
 				if countdown == 0 || len(playerList) != 0 {
@@ -763,9 +1029,8 @@ func (a *App) getTarget(c *client.Client) string {
 
 	playerList, err = c.GetPlayers()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("a.getTarget 45, c.GetPlayers; %v", err)
 	}
-
 	selectedPlayerIndex := 0
 	selectedPlayerStyle := termui.NewStyle(termui.ColorGreen, termui.ColorBlack)
 
@@ -804,9 +1069,34 @@ func (a *App) getTarget(c *client.Client) string {
 				termui.Clear()
 				return selectedPlayer
 			case "<Escape>":
-				termui.Clear()
 				termui.Close()
-				return ""
+				kb, err := keybd_event.NewKeyBonding()
+				if err != nil {
+					log.Fatalf("ui keybind 46, keybd_event.NewKeyBonding(); %v", err)
+				}
+				if runtime.GOOS == "linux" {
+					time.Sleep(2 * time.Second)
+				}
+
+				kb.SetKeys(keybd_event.VK_C)
+
+				kb.HasCTRL(true)
+
+				err = kb.Launching()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				err = kb.Press()
+				if err != nil {
+					log.Fatalf("ui keypress 47, kb.Press(); %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				err = kb.Release()
+				if err != nil {
+					log.Fatalf("ui keypress 48, kb.Release(); %v", err)
+				}
+				break
 			}
 			termui.Render(playerListWidget)
 		case termui.ResizeEvent:
@@ -817,12 +1107,15 @@ func (a *App) getTarget(c *client.Client) string {
 		}
 	}
 }
-func (a *App) waitForOpponent(c *client.Client, waitingTime time.Duration) {
+func (a *App) waitForOpponent(waitingTime time.Duration) {
+	err := termui.Init()
+	if err != nil {
+		return
+	}
 	termui.Clear()
-	var err error
 	a.Status, err = a.Client.GetStatus()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("a.waitForOpponent 49, c.GetStatus; %v", err)
 	}
 	waitingMsg := widgets.NewParagraph()
 	waitingMsg.TextStyle = termui.NewStyle(termui.ColorYellow)
@@ -833,9 +1126,9 @@ func (a *App) waitForOpponent(c *client.Client, waitingTime time.Duration) {
 	for a.Status.GameStatus == "waiting" || a.Status.GameStatus == "waiting_wpbot" {
 		var err error
 		time.Sleep(waitingTime)
-		a.Status, err = c.GetStatus()
+		a.Status, err = a.Client.GetStatus()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("a.waitForOpponent 50, c.GetStatus; %v", err)
 		}
 
 		switch time.Now().Second() % 3 {
@@ -887,6 +1180,10 @@ func (a *App) buildBattlefield(ui *gui.GUI) *GuiBattle {
 	shotRes := gui.NewText(xPBoard, yBoards-2, "", nil)
 	guiBattle.Ui.Draw(shotRes)
 	guiBattle.ShotResult = shotRes
+
+	oppShotRes := gui.NewText(xOBoard, yBoards-2, "", nil)
+	guiBattle.Ui.Draw(oppShotRes)
+	guiBattle.OppShotResult = oppShotRes
 
 	pBoard := gui.NewBoard(xPBoard, yBoards, nil)
 	guiBattle.Ui.Draw(pBoard)
@@ -947,7 +1244,7 @@ func (a *App) formatString(s string, n, x, y int, ui *gui.GUI) {
 	}
 }
 
-func (a *App) makeFleet(ui *gui.GUI) ([]string, error) {
+func (a *App) makeFleet(ui *gui.GUI, ctx context.Context, ctxCancel context.CancelFunc) ([]string, error) {
 	cfg := gui.NewBoardConfig()
 	cfg.HitChar = 'A'
 	cfg.HitColor = gui.Grey
@@ -959,132 +1256,101 @@ func (a *App) makeFleet(ui *gui.GUI) ([]string, error) {
 		}
 	}
 	board.SetStates(states)
-
-	fourTile := fourTileCount
-	threeTile := threeTileCount
-	twoTile := twoTileCount
-	oneTile := oneTileCount
-
-	fourTileTxt := gui.NewText(5, 1, fmt.Sprintf("4 tiles left: %d", fourTile), nil)
-	threeTileTxt := gui.NewText(5, 3, fmt.Sprintf("3 tiles left: %d", threeTile), nil)
-	twoTileTxt := gui.NewText(5, 5, fmt.Sprintf("2 tiles left: %d", twoTile), nil)
-	oneTileTxt := gui.NewText(5, 7, fmt.Sprintf("1 tile left: %d", oneTile), nil)
-
-	ui.Draw(fourTileTxt)
-	ui.Draw(threeTileTxt)
-	ui.Draw(twoTileTxt)
-	ui.Draw(oneTileTxt)
-
+	shipCoords := make([]string, 0)
 	ui.Draw(board)
 
-	var shipCoords [][]int // Slice to store ship coordinates
-	hasHitTiles := false
-
-	go func(hasHitTiles *bool) {
-		for {
-			for _, row := range states {
-				for _, state := range row {
-					if state == gui.Hit {
-						*hasHitTiles = true
-						break
-					}
-				}
-				break
-			}
+	go func() {
+		for len(shipCoords) != 20 {
 			char := board.Listen(ctx)
 			x, y, err := a.stringCoordToInt(char)
 			if err != nil {
 				log.Fatal(err)
 			}
-
-			if !*hasHitTiles {
-				states = a.markAllowed(x, y, states, hasHitTiles)
-				board.SetStates(states)
-				continue
-			} else if *hasHitTiles {
-				if states[x][y-1] == gui.Hit {
-					states = a.markAllowed(x, y, states, hasHitTiles)
-					board.SetStates(states)
-					continue
-				} else if states[x][y-1] == gui.Ship {
-					states = a.markAllowed(x, y, states, hasHitTiles)
-					board.SetStates(states)
-					continue
-				} else if states[x][y-1] == gui.Empty {
-					continue
+			if states[x][y-1] != gui.Ship {
+				states[x][y-1] = gui.Ship
+				shipCoords = append(shipCoords, char)
+			} else {
+				states[x][y-1] = gui.Empty
+				for j := len(shipCoords) - 1; j >= 0; j-- {
+					if shipCoords[j] == char {
+						shipCoords = append(shipCoords[:j], shipCoords[j+1:]...)
+						break
+					}
 				}
 			}
+			board.SetStates(states)
 		}
-	}(&hasHitTiles)
+		ui.Remove(board)
+		ctxCancel()
+	}()
 
 	ui.Start(ctx, nil)
 
-	// Convert shipCoords to slice of strings in the format "A1", "G7"
-	shipCoordsStr, err := a.mappingInts(shipCoords)
-	if err != nil {
-		return nil, err
+	return shipCoords, nil
+}
+func (a *App) checkShips(coords []string) bool {
+	shipCount := map[int]int{
+		1: 4, // One-tilers
+		2: 3, // Two-tilers
+		3: 2, // Three-tilers
+		4: 1, // Four-tilers
 	}
 
-	return shipCoordsStr, nil
-}
+	coordMap := make(map[string]bool)
+	for _, coord := range coords {
+		coordMap[coord] = true
+	}
 
-func (a *App) markAllowed(x, y int, states [10][10]gui.State, hasHitTiles *bool) [10][10]gui.State {
-	if states[x][y-1] == gui.Empty && !*hasHitTiles {
-		if y != 1 && states[x][y-2] != gui.Ship {
-			states[x][y-2] = gui.Hit
-		}
-		if x != 0 && states[x-1][y-1] != gui.Ship {
-			states[x-1][y-1] = gui.Hit
-		}
-		if x != 9 && states[x+1][y-1] != gui.Ship {
-			states[x+1][y-1] = gui.Hit
-		}
-		if y != 10 && states[x][y] != gui.Ship {
-			states[x][y] = gui.Hit
-		}
-		states[x][y-1] = gui.Ship
-	} else if states[x][y-1] == gui.Ship {
-		if y != 1 && states[x][y-2] != gui.Ship {
-			states[x][y-2] = gui.Empty
-		}
-		if x != 0 && states[x-1][y-1] != gui.Ship {
-			states[x-1][y-1] = gui.Empty
-		}
-		if x != 9 && states[x+1][y-1] != gui.Ship {
-			states[x+1][y-1] = gui.Empty
-		}
-		if y != 10 && states[x][y] != gui.Ship {
-			states[x][y] = gui.Empty
-		}
-		states[x][y-1] = gui.Empty
-		hasShipTiles := false
-		for _, row := range states {
-			for _, state := range row {
-				if state == gui.Ship {
-					hasShipTiles = true
+	for size, count := range shipCount {
+		missingCount := count
+		for coord := range coordMap {
+			x, y, err := a.stringCoordToInt(coord)
+			if err != nil {
+				log.Fatalf("a.checkShips: stringCoordToInt; %v", err)
+			}
+			if a.isValidShip(coordMap, size, x, y) {
+				missingCount--
+				if missingCount == 0 {
 					break
 				}
 			}
-			break
 		}
-		if hasShipTiles {
-			states[x][y-1] = gui.Hit
+		if missingCount > 0 {
+			return false
 		}
-	} else if states[x][y-1] == gui.Hit {
-		if y != 1 && states[x][y-2] != gui.Ship {
-			states[x][y-2] = gui.Hit
-		}
-		if x != 0 && states[x-1][y-1] != gui.Ship {
-			states[x-1][y-1] = gui.Hit
-		}
-		if x != 9 && states[x+1][y-1] != gui.Ship {
-			states[x+1][y-1] = gui.Hit
-		}
-		if y != 10 && states[x][y] != gui.Ship {
-			states[x][y] = gui.Hit
-		}
-		states[x][y-1] = gui.Ship
 	}
 
-	return states
+	return true
+}
+
+func (a *App) isValidShip(coordMap map[string]bool, size, x, y int) bool {
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			if a.isShipInOrientation(coordMap, size, x, y, dx, dy) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *App) isShipInOrientation(coordMap map[string]bool, size, x, y, dx, dy int) bool {
+	for i := 0; i < size; i++ {
+		newX := x + (i * dx)
+		newY := y + (i * dy)
+		if newX < 0 || newX >= 10 || newY < 1 || newY > 10 {
+			continue
+		}
+		coord, err := a.intCoordToString(newX, newY)
+		if err != nil {
+			log.Fatalf("a.isShipInOrientation: intCoordToString; %v", err)
+		}
+		if _, ok := coordMap[coord]; !ok {
+			return false
+		}
+	}
+	return true
 }

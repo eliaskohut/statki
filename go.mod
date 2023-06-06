@@ -5,6 +5,7 @@ go 1.20
 require (
 	github.com/gizak/termui/v3 v3.1.0
 	github.com/grupawp/warships-gui/v2 v2.1.4
+	github.com/micmonay/keybd_event v1.1.1
 )
 
 require (
