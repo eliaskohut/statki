@@ -126,8 +126,10 @@ func (a *App) timerUpdate(guiB *GuiBattle, ctx context.Context, cancelCtx contex
 		}
 	}
 	winner = a.Nick
+	cfg := gui.TextConfig{BgColor: gui.Green, FgColor: gui.White}
 	if a.Status.LastGameStatus == "lose" {
 		winner = a.TargetNick
+		cfg = gui.TextConfig{BgColor: gui.Red}
 	}
 	guiB.Ui.Remove(guiB.PlayerNick)
 	guiB.Ui.Remove(guiB.PlayerBoard)
@@ -139,9 +141,10 @@ func (a *App) timerUpdate(guiB *GuiBattle, ctx context.Context, cancelCtx contex
 	guiB.Ui.Remove(guiB.ShouldFire)
 	guiB.Ui.Remove(guiB.Timer)
 	guiB.Ui.Remove(guiB.OpponentAccuracy)
-	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards, fmt.Sprintf("Winner: %s", winner), nil))
+	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards, fmt.Sprintf("You %s!", a.Status.LastGameStatus), &cfg))
+	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards+3, fmt.Sprintf("Winner: %s", winner), &cfg))
 	guiB.Exit.SetText("To start a new game press CTRL+C")
-	quitChan <- true
+	guiB.Ui.Log(fmt.Sprintf("Winner: %s", winner))
 }
 func (a *App) getAdjacentCoordinates(coord string) []string {
 	row := int(coord[1] - '1')
@@ -265,13 +268,46 @@ func (a *App) startBattle(guiB *GuiBattle, ctx context.Context, cancelCtx contex
 					guiB.OpponentBoardStates[x][y-1] = gui.Hit
 				} else if result == sunkRes {
 					hitShots = append(hitShots, char)
-					x, y, err := a.stringCoordToInt(char)
-					if err != nil {
-						log.Fatalf("app startBattle() miss check, a.stringCoordToInt(); %v", err)
-					}
 					guiB.OpponentBoardStates[x][y-1] = gui.Hit
-
-					//a.markAdjacentMisses(guiB, hitShots, char)
+					for _, coord := range a.getAdjacentCoordinates(char) {
+						x, y, err := a.stringCoordToInt(coord)
+						if err != nil {
+							log.Fatalf("app startBattle() 16 miss check, a.stringCoordToInt(); %v", err)
+						}
+						if !a.contains(coord, hitShots) {
+							guiB.OpponentBoardStates[x][y-1] = gui.Miss
+						} else if guiB.OpponentBoardStates[x][y-1] == gui.Hit {
+							for _, sCoord := range a.getAdjacentCoordinates(coord) {
+								x, y, err := a.stringCoordToInt(sCoord)
+								if err != nil {
+									log.Fatalf("app startBattle() 17 miss check, a.stringCoordToInt(); %v", err)
+								}
+								if !a.contains(sCoord, hitShots) {
+									guiB.OpponentBoardStates[x][y-1] = gui.Miss
+								} else if guiB.OpponentBoardStates[x][y-1] == gui.Hit {
+									for _, tCoord := range a.getAdjacentCoordinates(sCoord) {
+										x, y, err := a.stringCoordToInt(tCoord)
+										if err != nil {
+											log.Fatalf("app startBattle() 18 miss check, a.stringCoordToInt(); %v", err)
+										}
+										if !a.contains(tCoord, hitShots) {
+											guiB.OpponentBoardStates[x][y-1] = gui.Miss
+										} else if guiB.OpponentBoardStates[x][y-1] == gui.Hit {
+											for _, fCoord := range a.getAdjacentCoordinates(tCoord) {
+												x, y, err := a.stringCoordToInt(fCoord)
+												if err != nil {
+													log.Fatalf("app startBattle() 19 miss check, a.stringCoordToInt(); %v", err)
+												}
+												if !a.contains(fCoord, hitShots) {
+													guiB.OpponentBoardStates[x][y-1] = gui.Miss
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
 				} else if result == blankRes {
 					continue
 				} else if result == missRes {
@@ -306,8 +342,10 @@ func (a *App) startBattle(guiB *GuiBattle, ctx context.Context, cancelCtx contex
 		}
 	}
 	winner := a.Nick
+	cfg := gui.TextConfig{BgColor: gui.Green, FgColor: gui.White}
 	if a.Status.LastGameStatus == "lose" {
 		winner = a.TargetNick
+		cfg = gui.TextConfig{BgColor: gui.Red}
 	}
 	guiB.Ui.Remove(guiB.PlayerNick)
 	guiB.Ui.Remove(guiB.PlayerBoard)
@@ -319,7 +357,8 @@ func (a *App) startBattle(guiB *GuiBattle, ctx context.Context, cancelCtx contex
 	guiB.Ui.Remove(guiB.ShouldFire)
 	guiB.Ui.Remove(guiB.Timer)
 	guiB.Ui.Remove(guiB.OpponentAccuracy)
-	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards, fmt.Sprintf("Winner: %s", winner), nil))
+	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards, fmt.Sprintf("You %s!", a.Status.LastGameStatus), &cfg))
+	guiB.Ui.Draw(gui.NewText(xPBoard, yBoards+3, fmt.Sprintf("Winner: %s", winner), &cfg))
 	guiB.Exit.SetText("To start a new game press CTRL+C")
 	guiB.Ui.Log(fmt.Sprintf("Winner: %s", winner))
 	quitChan <- true
